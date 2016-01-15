@@ -17,10 +17,10 @@ pub struct Experiment {
 
 #[derive(Clone, RustcDecodable, RustcEncodable)]
 pub struct TrialConfig {
-  pub hyperparam:   Option<PathBuf>,
-  pub assets:       Vec<Asset>,
-  pub programs:     Vec<(PathBuf, Vec<String>)>,
+  //pub hyperparam:   Option<PathBuf>,
   pub resources:    Vec<(Resource, usize)>,
+  pub assets:       Vec<Asset>,
+  pub programs:     Vec<(PathBuf, Vec<String>, Vec<(String, String)>)>,
 }
 
 #[derive(Clone, RustcDecodable, RustcEncodable)]

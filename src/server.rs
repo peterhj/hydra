@@ -1,4 +1,4 @@
-use api::{Resource, Experiment};
+use api::{Resource, Experiment, Asset};
 
 use rand::{Rng, thread_rng};
 use std::collections::{HashMap, HashSet};
@@ -46,11 +46,17 @@ impl DualPath {
   }
 }
 
-fn expand_env_vars(hyperparam: Option<&DualPath>, resource_map: &HashMap<(Resource, usize), ResourceValue>) -> Option<Vec<(String, String)>> {
-  let mut env_vars = vec![];
+fn expand_env_vars(/*hyperparam: Option<&DualPath>, */env_vars: &[(String, String)], resource_map: &HashMap<(Resource, usize), ResourceValue>) -> Option<Vec<(String, String)>> {
+  let mut expand_env_vars = vec![];
 
-  if let Some(hyperparam) = hyperparam {
-    env_vars.push(("HYPERPARAM".to_string(), hyperparam.dst_path.to_str().unwrap().to_string()));
+  /*if let Some(hyperparam) = hyperparam {
+    expand_env_vars.push(("HYPERPARAM_PATH".to_string(), hyperparam.dst_path.to_str().unwrap().to_string()));
+  }*/
+
+  for &(ref env_key, ref env_value) in env_vars.iter() {
+    // FIXME(20160115): replace variable that is trial working path.
+    /*let mut expand_value = env_value.clone();*/
+    expand_env_vars.push((env_key.clone(), env_value.clone()));
   }
 
   let mut dev_idxs = vec![];
@@ -72,10 +78,10 @@ fn expand_env_vars(hyperparam: Option<&DualPath>, resource_map: &HashMap<(Resour
     let dev_idx_strs: Vec<String> = dev_idxs.iter()
       .map(|&dev_idx| format!("{}", dev_idx))
       .collect();
-    env_vars.push(("CUDA_VISIBLE_DEVICES".to_string(), dev_idx_strs.join(",")));
+    expand_env_vars.push(("CUDA_VISIBLE_DEVICES".to_string(), dev_idx_strs.join(",")));
   }
 
-  Some(env_vars)
+  Some(expand_env_vars)
 }
 
 fn expand_args(args: &[String], resource_map: &HashMap<(Resource, usize), ResourceValue>) -> Option<Vec<String>> {
@@ -108,9 +114,10 @@ pub struct Trial {
   pub trial_idx:    usize,
   pub resource_map: HashMap<(Resource, usize), ResourceValue>,
   pub trial_path:   PathBuf,
-  pub hyperparam:   Option<DualPath>,
-  pub env_vars:     Vec<(String, String)>,
-  pub programs:     Vec<(DualPath, Vec<String>)>,
+  //pub hyperparam:   Option<DualPath>,
+  //pub env_vars:     Vec<(String, String)>,
+  pub assets:       Vec<DualPath>,
+  pub programs:     Vec<(DualPath, Vec<String>, Vec<(String, String)>)>,
 }
 
 impl Trial {
@@ -129,26 +136,36 @@ impl Trial {
         }
       }
     }
-    let hyperparam = experiment.trial_cfg.hyperparam
-      .as_ref().map(|p| DualPath::new(p, &experiment.trials_path));
-    let env_vars = match expand_env_vars(hyperparam.as_ref(), &resource_map) {
-      Some(env_vars) => env_vars,
-      None => panic!("failed to make env vars!"),
-    };
-    let programs: Vec<_> = experiment.trial_cfg.programs
-      .iter().map(|&(ref p, ref args)| (DualPath::new(p, &experiment.trials_path), {
-        match expand_args(args, &resource_map) {
-          Some(exp_args) => exp_args,
-          None => panic!("invalid args: {:?}", args),
+    /*let hyperparam = experiment.trial_cfg.hyperparam
+      .as_ref().map(|p| DualPath::new(p, &experiment.trials_path));*/
+    let assets: Vec<_> = experiment.trial_cfg.assets
+      .iter().map(|asset| match asset {
+        &Asset::Copy{ref src} => {
+          unimplemented!();
         }
-      }))
+        &Asset::Symlink{ref src} => {
+          unimplemented!();
+        }
+      })
+      .collect();
+    let programs: Vec<_> = experiment.trial_cfg.programs
+      .iter().map(|&(ref p, ref args, ref env_vars)| {
+        let args = match expand_args(args, &resource_map) {
+          Some(args) => args,
+          None => panic!("invalid args: {:?}", args),
+        };
+        let env_vars = match expand_env_vars(env_vars, &resource_map) {
+          Some(env_vars) => env_vars,
+          None => panic!("failed to make env vars!"),
+        };
+        (DualPath::new(p, &experiment.trials_path), args, env_vars)
+      })
       .collect();
     Some(Trial{
       trial_idx:    trial_idx,
       resource_map: resource_map,
       trial_path:   experiment.trials_path.clone(),
-      hyperparam:   hyperparam,
-      env_vars:     env_vars,
+      assets:       assets,
       programs:     programs,
     })
   }

@@ -9,6 +9,7 @@ use rustc_serialize::json;
 use threadpool::{ThreadPool};
 //use zmq;
 
+use std::fs::{File, create_dir};
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 use std::str::{from_utf8};
@@ -56,10 +57,11 @@ impl WorkerServer {
             match maybe_trial {
               Some(trial) => {
                 // TODO(20160113)
+                create_dir(&trial.trial_path).ok();
                 let mut procs = vec![];
-                for &(ref exec, ref args) in trial.programs.iter() {
+                for &(ref exec, ref args, ref env_vars) in trial.programs.iter() {
                   let mut cmd = Command::new(&exec.dst_path);
-                  for &(ref env_key, ref env_value) in trial.env_vars.iter() {
+                  for &(ref env_key, ref env_value) in env_vars.iter() {
                     cmd.env(env_key, env_value);
                   }
                   cmd.args(args);
@@ -78,6 +80,14 @@ impl WorkerServer {
                   // read it while running.
                   match child.wait_with_output() {
                     Ok(output) => {
+                      let mut out_path = trial.trial_path.clone();
+                      out_path.push(&format!("trial.{}.out", trial_idx));
+                      let mut err_path = trial.trial_path.clone();
+                      err_path.push(&format!("trial.{}.err", trial_idx));
+                      let mut out_file = File::create(&out_path).unwrap();
+                      out_file.write_all(&output.stdout).unwrap();
+                      let mut err_file = File::create(&err_path).unwrap();
+                      err_file.write_all(&output.stderr).unwrap();
                     }
                     Err(e) => panic!("failed to finish trial: {:?}", e),
                   }

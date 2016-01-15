@@ -15,45 +15,38 @@ pub enum ControlCmd {
   SubmitExperiment{experiment: Experiment},
 }
 
-pub struct ControlClient; /*{
-  zmq_ctx:      zmq::Context,
-}*/
+pub struct ControlClient;
 
 impl ControlClient {
   pub fn new() -> ControlClient {
-    ControlClient/*{
-      zmq_ctx:      zmq::Context::new(),
-    }*/
+    ControlClient
   }
 
   pub fn send_cmd(&mut self, cmd: ControlCmd) {
     /*let mut cmd_req = self.zmq_ctx.socket(zmq::REQ).unwrap();
-    assert!(cmd_req.connect("tcp://127.0.0.1:8000").is_ok());
+    assert!(cmd_req.connect("tcp://127.0.0.1:9999").is_ok());
     let mut cmd_msg = zmq::Message::with_capacity(4096).unwrap();*/
     let mut cmd_req = nanomsg::Socket::new(nanomsg::Protocol::Req).unwrap();
-    let cmd_req_end = cmd_req.connect("tcp://127.0.0.1:8000").unwrap();
+    let cmd_req_end = cmd_req.connect("tcp://127.0.0.1:9999").unwrap();
     let encoded_str = json::encode(&cmd).unwrap();
     let encoded_bytes = (&encoded_str).as_bytes();
     println!("DEBUG: encoded: {:?}", encoded_str);
-    //cmd_req.send(encoded_bytes, 0).unwrap();
-    //cmd_req.recv_bytes(0).unwrap();
+    cmd_req.write_all(encoded_bytes).unwrap();
+    let mut rep_bytes = vec![];
+    cmd_req.read_to_end(&mut rep_bytes).unwrap();
   }
 }
 
-pub struct ControlServer; /*{
-  zmq_ctx:      zmq::Context,
-}*/
+pub struct ControlServer;
 
 impl ControlServer {
   pub fn new() -> ControlServer {
-    ControlServer/*{
-      zmq_ctx:      zmq::Context::new(),
-    }*/
+    ControlServer
   }
 
   pub fn runloop(&mut self) {
     /*let mut cmd_reply = self.zmq_ctx.socket(zmq::REP).unwrap();
-    assert!(cmd_reply.bind("tcp://127.0.0.1:8000").is_ok());
+    assert!(cmd_reply.bind("tcp://127.0.0.1:9999").is_ok());
     let mut bcast = self.zmq_ctx.socket(zmq::PUB).unwrap();
     assert!(bcast.bind(CONTROL_BCAST_ADDR).is_ok());
     let mut source = self.zmq_ctx.socket(zmq::PUSH).unwrap();
@@ -61,7 +54,7 @@ impl ControlServer {
     let mut sink = self.zmq_ctx.socket(zmq::PULL).unwrap();
     assert!(sink.bind(CONTROL_SINK_ADDR).is_ok());*/
     let mut cmd_reply = nanomsg::Socket::new(nanomsg::Protocol::Rep).unwrap();
-    let cmd_reply_end = cmd_reply.bind("tcp://127.0.0.1:8000").unwrap();
+    let cmd_reply_end = cmd_reply.bind("tcp://127.0.0.1:9999").unwrap();
     let mut source = nanomsg::Socket::new(nanomsg::Protocol::Rep).unwrap();
     let source_end = cmd_reply.bind(CONTROL_SOURCE_ADDR).unwrap();
 
@@ -74,7 +67,7 @@ impl ControlServer {
         json::decode(encoded_str).unwrap()
       };
       //cmd_reply.send(&[], 0).unwrap();
-      cmd_reply.write(&[]).unwrap();
+      cmd_reply.write_all(&[]).unwrap();
       match cmd {
         ControlCmd::Dummy => {}
         ControlCmd::SubmitExperiment{experiment} => {
@@ -88,7 +81,7 @@ impl ControlServer {
             let encoded_str = json::encode(&msg).unwrap();
             let encoded_bytes = (&encoded_str).as_bytes();
             //source.send(encoded_bytes, 0).unwrap();
-            source.write(encoded_bytes).unwrap();
+            source.write_all(encoded_bytes).unwrap();
           }
         }
       }
