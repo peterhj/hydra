@@ -8,6 +8,25 @@ pub enum Resource {
   CudaGpu,
 }
 
+impl Resource {
+  pub fn to_key_string(&self, res_idx: usize) -> String {
+    match self {
+      &Resource::RandomSeed32 => {
+        format!("${{HYDRA.SEED32.{}}}", res_idx)
+      }
+      &Resource::RandomSeed64 => {
+        format!("${{HYDRA.SEED64.{}}}", res_idx)
+      }
+      &Resource::Port => {
+        format!("${{HYDRA.PORT.{}}}", res_idx)
+      }
+      &Resource::CudaGpu => {
+        format!("${{HYDRA.CUDAGPU.{}}}", res_idx)
+      }
+    }
+  }
+}
+
 #[derive(Clone, RustcDecodable, RustcEncodable)]
 pub struct Experiment {
   pub trial_cfg:    TrialConfig,

@@ -17,12 +17,105 @@ use std::sync::{Arc, Mutex};
 //use std::sync::mpsc::{Sender, channel};
 use std::thread::{sleep_ms};
 
-enum State {
+/*enum State {
   Idle,
+}*/
+
+fn work_loop(work_rx: chan::Receiver<(usize, Experiment)>, work_res_cache: Arc<Mutex<ResourceCache>>) {
+  let mut work_queue = vec![];
+  //let mut trial_queue = vec![];
+  loop {
+    let (trial_idx, experiment) = work_rx.recv().unwrap();
+    work_queue.push((trial_idx, experiment));
+    while !work_queue.is_empty() {
+      let (trial_idx, experiment) = work_queue.pop().unwrap();
+      let maybe_trial = {
+        let mut work_res_cache = work_res_cache.lock().unwrap();
+        Trial::create(trial_idx, &experiment, &mut *work_res_cache)
+      };
+      match maybe_trial {
+        Some(trial) => {
+          create_dir(&trial.trial_path).ok();
+
+          // Dump resource map to file (looks like variable definitions).
+          {
+            let mut resmap_path = trial.trial_path.clone();
+            resmap_path.push(&format!("trial.{}.resmap", trial_idx));
+            let mut resmap_file = File::create(&resmap_path).unwrap();
+            for (&(resource, res_idx), res_value) in trial.resource_map.iter() {
+              writeln!(resmap_file, "{} = {}", resource.to_key_string(res_idx), res_value.to_value_string()).unwrap();
+            }
+          }
+
+          // Launch processes.
+          let mut procs = vec![];
+          for &(ref exec, ref args, ref env_vars) in trial.programs.iter() {
+            let mut cmd = Command::new(&exec.dst_path);
+            for &(ref env_key, ref env_value) in env_vars.iter() {
+              cmd.env(env_key, env_value);
+            }
+            cmd.args(args);
+            cmd.current_dir(&trial.trial_path);
+            cmd.stdout(Stdio::piped());
+            cmd.stderr(Stdio::piped());
+            let child = match cmd.spawn() {
+              Ok(child) => child,
+              Err(e) => panic!("failed to start trial: {:?}", e),
+            };
+            procs.push(child);
+            // FIXME(20160115): should be a configurable delay for stability.
+            sleep_ms(2000);
+          }
+
+          // Dump shell commands to scripts.
+          {
+            let mut script_path = trial.trial_path.clone();
+            script_path.push(&format!("trial.{}.sh", trial_idx));
+            let mut script_file = File::create(&script_path).unwrap();
+            writeln!(script_file, "#!/bin/sh").unwrap();
+            writeln!(script_file, "source ./trial.{}.resmap", trial_idx).unwrap();
+            for &(ref exec, ref args, ref env_vars) in trial.programs.iter() {
+              for &(ref env_key, ref env_value) in env_vars.iter() {
+                write!(script_file, "{}={} ", env_key, env_value).unwrap();
+              }
+              write!(script_file, "{} ", exec.dst_path.as_os_str().to_str().unwrap()).unwrap();
+              for arg in args.iter() {
+                write!(script_file, "{} ", arg).unwrap();
+              }
+              writeln!(script_file, "").unwrap();
+            }
+          }
+
+          // Join processes.
+          for child in procs.into_iter() {
+            // FIXME(20160113): instead of getting stdout/err at end, read and
+            // dump them periodically; can do this by .take()'ing stdout and
+            // stderr and reading them from another thread.
+            match child.wait_with_output() {
+              Ok(output) => {
+                let mut out_path = trial.trial_path.clone();
+                out_path.push(&format!("trial.{}.out", trial_idx));
+                let mut err_path = trial.trial_path.clone();
+                err_path.push(&format!("trial.{}.err", trial_idx));
+                let mut out_file = File::create(&out_path).unwrap();
+                out_file.write_all(&output.stdout).unwrap();
+                let mut err_file = File::create(&err_path).unwrap();
+                err_file.write_all(&output.stderr).unwrap();
+              }
+              Err(e) => panic!("failed to finish trial: {:?}", e),
+            }
+          }
+        }
+        None => {
+          work_queue.push((trial_idx, experiment));
+          sleep_ms(1000);
+        }
+      }
+    }
+  }
 }
 
 pub struct WorkerServer {
-  //zmq_ctx:      zmq::Context,
   res_cache:    Arc<Mutex<ResourceCache>>,
   //work_tx:      Sender<(usize, Experiment)>,
   //work_tx:      spmc::unbounded::Producer<'a, (usize, Experiment)>,
@@ -42,68 +135,10 @@ impl WorkerServer {
       let work_rx = rx.clone();
       let work_res_cache = res_cache.clone();
       work_pool.execute(move || {
-        let mut work_res_cache = work_res_cache;
-        let mut work_queue = vec![];
-        //let mut trial_queue = vec![];
-        loop {
-          let (trial_idx, experiment) = work_rx.recv().unwrap();
-          work_queue.push((trial_idx, experiment));
-          while !work_queue.is_empty() {
-            let (trial_idx, experiment) = work_queue.pop().unwrap();
-            let maybe_trial = {
-              let mut work_res_cache = work_res_cache.lock().unwrap();
-              Trial::create(trial_idx, &experiment, &mut *work_res_cache)
-            };
-            match maybe_trial {
-              Some(trial) => {
-                // TODO(20160113)
-                create_dir(&trial.trial_path).ok();
-                let mut procs = vec![];
-                for &(ref exec, ref args, ref env_vars) in trial.programs.iter() {
-                  let mut cmd = Command::new(&exec.dst_path);
-                  for &(ref env_key, ref env_value) in env_vars.iter() {
-                    cmd.env(env_key, env_value);
-                  }
-                  cmd.args(args);
-                  cmd.current_dir(&trial.trial_path);
-                  cmd.stdout(Stdio::piped());
-                  cmd.stderr(Stdio::piped());
-                  let child = match cmd.spawn() {
-                    Ok(child) => child,
-                    Err(e) => panic!("failed to start trial: {:?}", e),
-                  };
-                  procs.push(child);
-                  sleep_ms(2000);
-                }
-                for child in procs.into_iter() {
-                  // FIXME(20160113): instead of getting stdout/err at end,
-                  // read it while running.
-                  match child.wait_with_output() {
-                    Ok(output) => {
-                      let mut out_path = trial.trial_path.clone();
-                      out_path.push(&format!("trial.{}.out", trial_idx));
-                      let mut err_path = trial.trial_path.clone();
-                      err_path.push(&format!("trial.{}.err", trial_idx));
-                      let mut out_file = File::create(&out_path).unwrap();
-                      out_file.write_all(&output.stdout).unwrap();
-                      let mut err_file = File::create(&err_path).unwrap();
-                      err_file.write_all(&output.stderr).unwrap();
-                    }
-                    Err(e) => panic!("failed to finish trial: {:?}", e),
-                  }
-                }
-              }
-              None => {
-                work_queue.push((trial_idx, experiment));
-                sleep_ms(1000);
-              }
-            }
-          }
-        }
+        work_loop(work_rx, work_res_cache);
       });
     }
     WorkerServer{
-      //zmq_ctx:      zmq::Context::new(),
       res_cache:    res_cache,
       work_tx:      tx,
       work_pool:    work_pool,

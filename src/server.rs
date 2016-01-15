@@ -28,6 +28,15 @@ impl ResourceValue {
       _ => unreachable!(),
     }
   }
+
+  pub fn to_value_string(&self) -> String {
+    match self {
+      &ResourceValue::CudaGpu{dev_idx} => {
+        format!("{}", dev_idx)
+      }
+      x => x.to_arg_string(),
+    }
+  }
 }
 
 pub struct DualPath {
@@ -87,25 +96,22 @@ fn expand_env_vars(/*hyperparam: Option<&DualPath>, */env_vars: &[(String, Strin
 fn expand_args(args: &[String], resource_map: &HashMap<(Resource, usize), ResourceValue>) -> Option<Vec<String>> {
   let mut expand_args = Vec::with_capacity(args.len());
   for arg in args.iter() {
+    let mut new_arg = arg.clone();
     for (&(resource, res_idx), res_val) in resource_map.iter() {
       match resource {
         Resource::RandomSeed32 => {
-          let new_arg = arg.replace(&format!("${{HYPER.SEED32.{}}}", res_idx), &res_val.to_arg_string());
-          expand_args.push(new_arg);
+          new_arg = new_arg.replace(&format!("${{HYDRA.SEED32.{}}}", res_idx), &res_val.to_arg_string());
         }
         Resource::RandomSeed64 => {
-          let new_arg = arg.replace(&format!("${{HYPER.SEED64.{}}}", res_idx), &res_val.to_arg_string());
-          expand_args.push(new_arg);
+          new_arg = new_arg.replace(&format!("${{HYDRA.SEED64.{}}}", res_idx), &res_val.to_arg_string());
         }
         Resource::Port => {
-          let new_arg = arg.replace(&format!("${{HYPER.PORT.{}}}", res_idx), &res_val.to_arg_string());
-          expand_args.push(new_arg);
+          new_arg = new_arg.replace(&format!("${{HYDRA.PORT.{}}}", res_idx), &res_val.to_arg_string());
         }
         _ => {}
       }
     }
-    // TODO(20160112)
-    unimplemented!();
+    expand_args.push(new_arg);
   }
   Some(expand_args)
 }
