@@ -1,6 +1,6 @@
 use api::{Experiment};
 use static_hosts::{CONTROL_BCAST_ADDR, CONTROL_SOURCE_ADDR, CONTROL_SINK_ADDR};
-use server::{Trial, ResourceCacheConfig, ResourceCache, ProtocolMsg};
+use server::{Trial, DualAsset, ResourceCacheConfig, ResourceCache, ProtocolMsg};
 
 //use comm::spmc;
 use chan;
@@ -9,8 +9,10 @@ use rustc_serialize::json;
 use threadpool::{ThreadPool};
 //use zmq;
 
-use std::fs::{File, create_dir};
+use std::env::{current_dir, set_current_dir};
+use std::fs::{File, copy, create_dir_all};
 use std::io::{Read, Write};
+use std::os::unix::fs::{symlink};
 use std::process::{Command, Stdio};
 use std::str::{from_utf8};
 use std::sync::{Arc, Mutex};
@@ -22,6 +24,7 @@ use std::thread::{sleep_ms};
 }*/
 
 fn work_loop(work_rx: chan::Receiver<(usize, Experiment)>, work_res_cache: Arc<Mutex<ResourceCache>>) {
+  let orig_current_path = current_dir().unwrap();
   let mut work_queue = vec![];
   //let mut trial_queue = vec![];
   loop {
@@ -35,7 +38,11 @@ fn work_loop(work_rx: chan::Receiver<(usize, Experiment)>, work_res_cache: Arc<M
       };
       match maybe_trial {
         Some(trial) => {
-          create_dir(&trial.trial_path).ok();
+          // Change our current directory.
+          assert!(set_current_dir(&trial.current_path).is_ok());
+
+          // Create the trial directory.
+          assert!(create_dir_all(&trial.trial_path).is_ok());
 
           // Dump resource map to file (looks like variable definitions).
           {
@@ -43,7 +50,27 @@ fn work_loop(work_rx: chan::Receiver<(usize, Experiment)>, work_res_cache: Arc<M
             resmap_path.push(&format!("trial.{}.resmap", trial_idx));
             let mut resmap_file = File::create(&resmap_path).unwrap();
             for (&(resource, res_idx), res_value) in trial.resource_map.iter() {
-              writeln!(resmap_file, "{} = {}", resource.to_key_string(res_idx), res_value.to_value_string()).unwrap();
+              writeln!(resmap_file, "{} = \"{}\"", resource.to_key_string(res_idx), res_value.to_value_string()).unwrap();
+            }
+          }
+
+          // Create asset files.
+          for asset in trial.assets.iter() {
+            match asset {
+              &DualAsset::Copy{ref path} => {
+                // FIXME(20160122): create missing dirs.
+                let mut dst_dir = path.dst_path.clone();
+                dst_dir.pop();
+                assert!(create_dir_all(&dst_dir).is_ok());
+                copy(&path.src_path, &path.dst_path).unwrap();
+              }
+              &DualAsset::Symlink{ref path} => {
+                // FIXME(20160122): create missing dirs.
+                let mut dst_dir = path.dst_path.clone();
+                dst_dir.pop();
+                assert!(create_dir_all(&dst_dir).is_ok());
+                symlink(&path.src_path, &path.dst_path).unwrap();
+              }
             }
           }
 
@@ -73,7 +100,6 @@ fn work_loop(work_rx: chan::Receiver<(usize, Experiment)>, work_res_cache: Arc<M
             script_path.push(&format!("trial.{}.sh", trial_idx));
             let mut script_file = File::create(&script_path).unwrap();
             writeln!(script_file, "#!/bin/sh").unwrap();
-            writeln!(script_file, "source ./trial.{}.resmap", trial_idx).unwrap();
             for &(ref exec, ref args, ref env_vars) in trial.programs.iter() {
               for &(ref env_key, ref env_value) in env_vars.iter() {
                 write!(script_file, "{}={} ", env_key, env_value).unwrap();
@@ -105,6 +131,9 @@ fn work_loop(work_rx: chan::Receiver<(usize, Experiment)>, work_res_cache: Arc<M
               Err(e) => panic!("failed to finish trial: {:?}", e),
             }
           }
+
+          // Reset our current directory.
+          assert!(set_current_dir(&orig_current_path).is_ok());
         }
         None => {
           work_queue.push((trial_idx, experiment));

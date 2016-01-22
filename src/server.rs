@@ -1,10 +1,39 @@
 use api::{Resource, Experiment, Asset};
 
 use rand::{Rng, thread_rng};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap};
 use std::ops::{Range};
 use std::path::{PathBuf};
-use std::thread::{sleep_ms};
+
+pub struct DualPath {
+  pub src_path: PathBuf,
+  pub dst_path: PathBuf,
+}
+
+impl DualPath {
+  pub fn new(path: &PathBuf, trials_path: &PathBuf) -> DualPath {
+    let mut dst_path = trials_path.clone();
+    dst_path.set_file_name(&path.file_name().unwrap());
+    DualPath{
+      src_path: path.clone(),
+      dst_path: dst_path,
+    }
+  }
+
+  pub fn new_with_suffix(path: &PathBuf, trials_path: &PathBuf, suffix: &PathBuf) -> DualPath {
+    let mut dst_path = trials_path.clone();
+    dst_path.push(suffix);
+    DualPath{
+      src_path: path.clone(),
+      dst_path: dst_path,
+    }
+  }
+}
+
+pub enum DualAsset {
+  Copy{path: DualPath},
+  Symlink{path: DualPath},
+}
 
 pub enum ResourceValue {
   RandomSeed32{seed: u32},
@@ -39,22 +68,6 @@ impl ResourceValue {
   }
 }
 
-pub struct DualPath {
-  src_path:     PathBuf,
-  pub dst_path: PathBuf,
-}
-
-impl DualPath {
-  pub fn new(path: &PathBuf, trials_path: &PathBuf) -> DualPath {
-    let mut dst_path = trials_path.clone();
-    dst_path.set_file_name(&path.file_name().unwrap());
-    DualPath{
-      src_path: path.clone(),
-      dst_path: dst_path,
-    }
-  }
-}
-
 fn expand_env_vars(/*hyperparam: Option<&DualPath>, */env_vars: &[(String, String)], resource_map: &HashMap<(Resource, usize), ResourceValue>) -> Option<Vec<(String, String)>> {
   let mut expand_env_vars = vec![];
 
@@ -63,7 +76,8 @@ fn expand_env_vars(/*hyperparam: Option<&DualPath>, */env_vars: &[(String, Strin
   }*/
 
   for &(ref env_key, ref env_value) in env_vars.iter() {
-    // FIXME(20160115): replace variable that is trial working path.
+    // FIXME(20160115): replace variable that is trial working path
+    // (currently doesn't exist).
     /*let mut expand_value = env_value.clone();*/
     expand_env_vars.push((env_key.clone(), env_value.clone()));
   }
@@ -119,10 +133,11 @@ fn expand_args(args: &[String], resource_map: &HashMap<(Resource, usize), Resour
 pub struct Trial {
   pub trial_idx:    usize,
   pub resource_map: HashMap<(Resource, usize), ResourceValue>,
+  pub current_path: PathBuf,
   pub trial_path:   PathBuf,
   //pub hyperparam:   Option<DualPath>,
   //pub env_vars:     Vec<(String, String)>,
-  pub assets:       Vec<DualPath>,
+  pub assets:       Vec<DualAsset>,
   pub programs:     Vec<(DualPath, Vec<String>, Vec<(String, String)>)>,
 }
 
@@ -142,15 +157,16 @@ impl Trial {
         }
       }
     }
-    /*let hyperparam = experiment.trial_cfg.hyperparam
-      .as_ref().map(|p| DualPath::new(p, &experiment.trials_path));*/
     let assets: Vec<_> = experiment.trial_cfg.assets
       .iter().map(|asset| match asset {
         &Asset::Copy{ref src} => {
-          unimplemented!();
+          DualAsset::Copy{path: DualPath::new(src, &experiment.trials_path)}
         }
         &Asset::Symlink{ref src} => {
-          unimplemented!();
+          DualAsset::Symlink{path: DualPath::new(src, &experiment.trials_path)}
+        }
+        &Asset::SymlinkAs{ref src, ref dst} => {
+          DualAsset::Symlink{path: DualPath::new_with_suffix(src, &experiment.trials_path, dst)}
         }
       })
       .collect();
@@ -170,6 +186,7 @@ impl Trial {
     Some(Trial{
       trial_idx:    trial_idx,
       resource_map: resource_map,
+      current_path: experiment.current_path.clone(),
       trial_path:   experiment.trials_path.clone(),
       assets:       assets,
       programs:     programs,
@@ -180,24 +197,29 @@ impl Trial {
 pub struct ResourceCacheConfig {
   pub port_range:       Range<u16>,
   pub dev_idx_range:    Range<usize>,
+  pub dev_idx_overprov: usize,
 }
 
 pub struct ResourceCache {
   avail_ports:      Vec<u16>,
-  used_ports:       HashSet<u16>,
+  used_ports:       HashMap<u16, usize>,
   avail_dev_idxs:   Vec<usize>,
-  used_dev_idxs:    HashSet<usize>,
+  used_dev_idxs:    HashMap<usize, usize>,
 }
 
 impl ResourceCache {
   pub fn new(cfg: ResourceCacheConfig) -> ResourceCache {
     let mut avail_ports = cfg.port_range.collect();
-    let mut avail_dev_idxs = cfg.dev_idx_range.collect();
+    let mut avail_dev_idxs = vec![];
+    assert!(cfg.dev_idx_overprov >= 1);
+    for _ in 0 .. cfg.dev_idx_overprov {
+      avail_dev_idxs.extend(cfg.dev_idx_range.clone());
+    }
     ResourceCache{
       avail_ports:      avail_ports,
-      used_ports:       HashSet::new(),
+      used_ports:       HashMap::new(),
       avail_dev_idxs:   avail_dev_idxs,
-      used_dev_idxs:    HashSet::new(),
+      used_dev_idxs:    HashMap::new(),
     }
   }
 
@@ -215,7 +237,7 @@ impl ResourceCache {
         }
         let num_avail = self.avail_ports.len();
         let port = self.avail_ports.swap_remove(num_avail - 1);
-        self.used_ports.insert(port);
+        *self.used_ports.entry(port).or_insert(0) += 1;
         Some(ResourceValue::Port{port: port})
       }
       &Resource::CudaGpu => {
@@ -224,7 +246,7 @@ impl ResourceCache {
         }
         let num_avail = self.avail_dev_idxs.len();
         let dev_idx = self.avail_dev_idxs.swap_remove(num_avail - 1);
-        self.used_dev_idxs.insert(dev_idx);
+        *self.used_dev_idxs.entry(dev_idx).or_insert(0) += 1;
         Some(ResourceValue::CudaGpu{dev_idx: dev_idx})
       }
     }
@@ -236,8 +258,8 @@ impl ResourceCache {
         Resource::Port => {
           match res_val {
             &ResourceValue::Port{port} => {
-              assert!(self.used_ports.contains(&port));
-              self.used_ports.remove(&port);
+              assert!(self.used_ports.contains_key(&port));
+              *self.used_ports.get_mut(&port).unwrap() -= 1;
               self.avail_ports.push(port);
             }
             _ => unreachable!(),
@@ -246,8 +268,8 @@ impl ResourceCache {
         Resource::CudaGpu => {
           match res_val {
             &ResourceValue::CudaGpu{dev_idx} => {
-              assert!(self.used_dev_idxs.contains(&dev_idx));
-              self.used_dev_idxs.remove(&dev_idx);
+              assert!(self.used_dev_idxs.contains_key(&dev_idx));
+              *self.used_dev_idxs.get_mut(&dev_idx).unwrap() -= 1;
               self.avail_dev_idxs.push(dev_idx);
             }
             _ => unreachable!(),

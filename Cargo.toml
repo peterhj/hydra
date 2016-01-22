@@ -19,16 +19,5 @@ path = "tools/hydra-client.rs"
 rand = "*"
 rustc-serialize = "*"
 threadpool = "*"
-
-[dependencies.chan]
-git = "https://github.com/BurntSushi/chan.git"
-
-#[dependencies.comm]
-#git = "https://github.com/mahkoh/comm.git"
-
-[dependencies.nanomsg]
-#git = "https://github.com/thehydroimpulse/nanomsg.rs.git"
-path = "../libnanomsg"
-
-#[dependencies.zmq]
-#git = "https://github.com/erickt/rust-zmq.git"
+chan = { git = "https://github.com/BurntSushi/chan.git" }
+nanomsg = { path = "../libnanomsg" }

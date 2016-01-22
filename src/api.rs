@@ -30,6 +30,7 @@ impl Resource {
 #[derive(Clone, RustcDecodable, RustcEncodable)]
 pub struct Experiment {
   pub trial_cfg:    TrialConfig,
+  pub current_path: PathBuf,
   pub trials_path:  PathBuf,
   pub num_trials:   usize,
 }
@@ -46,4 +47,5 @@ pub struct TrialConfig {
 pub enum Asset {
   Copy{src: PathBuf},
   Symlink{src: PathBuf},
+  SymlinkAs{src: PathBuf, dst: PathBuf},
 }
