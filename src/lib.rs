@@ -1,4 +1,4 @@
-#![feature(slice_bytes)]
+//#![feature(slice_bytes)]
 
 extern crate chan;
 //extern crate comm;
@@ -8,11 +8,12 @@ extern crate rustc_serialize;
 extern crate threadpool;
 //extern crate zmq;
 
-use std::net::{TcpListener, TcpStream};
-use std::sync::mpsc::{channel};
+//use std::net::{TcpListener, TcpStream};
+//use std::sync::mpsc::{channel};
 
 pub mod api;
 pub mod control;
+pub mod hosts;
 pub mod server;
 pub mod static_hosts;
 pub mod worker;

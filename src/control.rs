@@ -1,6 +1,6 @@
 use api::{Experiment};
+use hosts::{Hostfile};
 use server::{ProtocolMsg};
-use static_hosts::{CONTROL_BCAST_ADDR, CONTROL_SOURCE_ADDR, CONTROL_SINK_ADDR};
 
 use nanomsg;
 use rustc_serialize::json;
@@ -32,16 +32,23 @@ impl ControlClient {
     let encoded_bytes = (&encoded_str).as_bytes();
     println!("DEBUG: encoded: {:?}", encoded_str);
     cmd_req.write_all(encoded_bytes).unwrap();
-    let mut rep_bytes = vec![];
-    cmd_req.read_to_end(&mut rep_bytes).unwrap();
+    //let mut rep_bytes = vec![];
+    //cmd_req.read_to_end(&mut rep_bytes).unwrap();
+    let mut rep_str = String::new();
+    cmd_req.read_to_string(&mut rep_str).unwrap();
+    println!("DEBUG: received: {}", rep_str);
   }
 }
 
-pub struct ControlServer;
+pub struct ControlServer {
+  hostfile: Hostfile,
+}
 
 impl ControlServer {
-  pub fn new() -> ControlServer {
-    ControlServer
+  pub fn new(hostfile: Hostfile) -> ControlServer {
+    ControlServer{
+      hostfile: hostfile,
+    }
   }
 
   pub fn runloop(&mut self) {
@@ -53,24 +60,35 @@ impl ControlServer {
     assert!(source.bind(CONTROL_SOURCE_ADDR).is_ok());
     let mut sink = self.zmq_ctx.socket(zmq::PULL).unwrap();
     assert!(sink.bind(CONTROL_SINK_ADDR).is_ok());*/
-    let mut cmd_reply = nanomsg::Socket::new(nanomsg::Protocol::Rep).unwrap();
-    let cmd_reply_end = cmd_reply.bind("tcp://127.0.0.1:9999").unwrap();
-    let mut source = nanomsg::Socket::new(nanomsg::Protocol::Rep).unwrap();
-    let source_end = cmd_reply.bind(CONTROL_SOURCE_ADDR).unwrap();
 
+    println!("DEBUG: ctrld: binding cmd: {}",
+        self.hostfile.get_cmd_addr());
+    let mut cmd_reply = nanomsg::Socket::new(nanomsg::Protocol::Rep).unwrap();
+    let mut cmd_reply_endpoint = cmd_reply.bind(&self.hostfile.get_cmd_addr()).unwrap();
+
+    println!("DEBUG: ctrld: binding source: {}",
+        self.hostfile.get_source_addr());
+    let mut source = nanomsg::Socket::new(nanomsg::Protocol::Push).unwrap();
+    let mut source_endpoint = source.bind(&self.hostfile.get_source_addr()).unwrap();
+
+    let mut encoded_str = String::new();
     loop {
-      //let encoded_bytes = cmd_reply.recv_bytes(0).unwrap();
-      let mut encoded_bytes = vec![];
-      cmd_reply.read_to_end(&mut encoded_bytes).unwrap();
+      //let mut encoded_bytes = vec![];
+      //cmd_reply.read_to_end(&mut encoded_bytes).unwrap();
+      encoded_str.clear();
+      cmd_reply.read_to_string(&mut encoded_str).unwrap();
       let cmd: ControlCmd = {
-        let encoded_str = from_utf8(&encoded_bytes).unwrap();
-        json::decode(encoded_str).unwrap()
+        //let encoded_str = from_utf8(&encoded_bytes).unwrap();
+        json::decode(&encoded_str).unwrap()
       };
-      //cmd_reply.send(&[], 0).unwrap();
-      cmd_reply.write_all(&[]).unwrap();
+      cmd_reply.write_all("ok".as_bytes()).unwrap();
       match cmd {
-        ControlCmd::Dummy => {}
+        ControlCmd::Dummy => {
+          println!("DEBUG: received dummy message");
+        }
         ControlCmd::SubmitExperiment{experiment} => {
+          println!("DEBUG: received experiment");
+          println!("DEBUG: {:?}", experiment);
           /*let msg = ProtocolMsg::NotifyWorkers;
           bcast.*/
           for trial_idx in 0 .. experiment.num_trials {
@@ -80,11 +98,15 @@ impl ControlServer {
             };
             let encoded_str = json::encode(&msg).unwrap();
             let encoded_bytes = (&encoded_str).as_bytes();
-            //source.send(encoded_bytes, 0).unwrap();
+            println!("DEBUG: sending trial {}/{}...",
+                trial_idx, experiment.num_trials);
             source.write_all(encoded_bytes).unwrap();
           }
         }
       }
     }
+
+    cmd_reply_endpoint.shutdown().unwrap();
+    source_endpoint.shutdown().unwrap();
   }
 }

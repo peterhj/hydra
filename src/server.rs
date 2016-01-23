@@ -2,9 +2,11 @@ use api::{Resource, Experiment, Asset};
 
 use rand::{Rng, thread_rng};
 use std::collections::{HashMap};
+use std::fs::{canonicalize};
 use std::ops::{Range};
 use std::path::{PathBuf};
 
+#[derive(Debug)]
 pub struct DualPath {
   pub src_path: PathBuf,
   pub dst_path: PathBuf,
@@ -13,9 +15,9 @@ pub struct DualPath {
 impl DualPath {
   pub fn new(path: &PathBuf, trials_path: &PathBuf) -> DualPath {
     let mut dst_path = trials_path.clone();
-    dst_path.set_file_name(&path.file_name().unwrap());
+    dst_path.push(&path.file_name().unwrap());
     DualPath{
-      src_path: path.clone(),
+      src_path: canonicalize(path).unwrap(),
       dst_path: dst_path,
     }
   }
@@ -24,7 +26,7 @@ impl DualPath {
     let mut dst_path = trials_path.clone();
     dst_path.push(suffix);
     DualPath{
-      src_path: path.clone(),
+      src_path: canonicalize(path).unwrap(),
       dst_path: dst_path,
     }
   }
@@ -160,10 +162,14 @@ impl Trial {
     let assets: Vec<_> = experiment.trial_cfg.assets
       .iter().map(|asset| match asset {
         &Asset::Copy{ref src} => {
-          DualAsset::Copy{path: DualPath::new(src, &experiment.trials_path)}
+          let asset_path = DualPath::new(src, &experiment.trials_path);
+          //println!("DEBUG: trial: asset path {:?}", asset_path);
+          DualAsset::Copy{path: asset_path}
         }
         &Asset::Symlink{ref src} => {
-          DualAsset::Symlink{path: DualPath::new(src, &experiment.trials_path)}
+          let asset_path = DualPath::new(src, &experiment.trials_path);
+          //println!("DEBUG: trial: asset path {:?}", asset_path);
+          DualAsset::Symlink{path: asset_path}
         }
         &Asset::SymlinkAs{ref src, ref dst} => {
           DualAsset::Symlink{path: DualPath::new_with_suffix(src, &experiment.trials_path, dst)}
@@ -209,7 +215,7 @@ pub struct ResourceCache {
 
 impl ResourceCache {
   pub fn new(cfg: ResourceCacheConfig) -> ResourceCache {
-    let mut avail_ports = cfg.port_range.collect();
+    let avail_ports = cfg.port_range.collect();
     let mut avail_dev_idxs = vec![];
     assert!(cfg.dev_idx_overprov >= 1);
     for _ in 0 .. cfg.dev_idx_overprov {
@@ -253,7 +259,7 @@ impl ResourceCache {
   }
 
   pub fn reclaim(&mut self, resource_map: &HashMap<(Resource, usize), ResourceValue>) {
-    for (&(resource, res_idx), res_val) in resource_map.iter() {
+    for (&(resource, _), res_val) in resource_map.iter() {
       match resource {
         Resource::Port => {
           match res_val {

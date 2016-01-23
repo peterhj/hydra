@@ -1,5 +1,5 @@
 use api::{Experiment};
-use static_hosts::{CONTROL_BCAST_ADDR, CONTROL_SOURCE_ADDR, CONTROL_SINK_ADDR};
+use hosts::{Hostfile};
 use server::{Trial, DualAsset, ResourceCacheConfig, ResourceCache, ProtocolMsg};
 
 //use comm::spmc;
@@ -10,7 +10,7 @@ use threadpool::{ThreadPool};
 //use zmq;
 
 use std::env::{current_dir, set_current_dir};
-use std::fs::{File, copy, create_dir_all};
+use std::fs::{File, canonicalize, copy, create_dir_all};
 use std::io::{Read, Write};
 use std::os::unix::fs::{symlink};
 use std::process::{Command, Stdio};
@@ -23,7 +23,7 @@ use std::thread::{sleep_ms};
   Idle,
 }*/
 
-fn work_loop(work_rx: chan::Receiver<(usize, Experiment)>, work_res_cache: Arc<Mutex<ResourceCache>>) {
+fn work_loop(work_rx: chan::Receiver<(usize, Experiment)>, work_res_cache: Arc<Mutex<ResourceCache>>, work_lock: Arc<Mutex<()>>) {
   let orig_current_path = current_dir().unwrap();
   let mut work_queue = vec![];
   //let mut trial_queue = vec![];
@@ -38,46 +38,105 @@ fn work_loop(work_rx: chan::Receiver<(usize, Experiment)>, work_res_cache: Arc<M
       };
       match maybe_trial {
         Some(trial) => {
-          // Change our current directory.
-          assert!(set_current_dir(&trial.current_path).is_ok());
+          let mut procs = vec![];
 
-          // Create the trial directory.
-          assert!(create_dir_all(&trial.trial_path).is_ok());
-
-          // Dump resource map to file (looks like variable definitions).
           {
-            let mut resmap_path = trial.trial_path.clone();
-            resmap_path.push(&format!("trial.{}.resmap", trial_idx));
-            let mut resmap_file = File::create(&resmap_path).unwrap();
-            for (&(resource, res_idx), res_value) in trial.resource_map.iter() {
-              writeln!(resmap_file, "{} = \"{}\"", resource.to_key_string(res_idx), res_value.to_value_string()).unwrap();
-            }
-          }
+            let guard = work_lock.lock().unwrap();
 
-          // Create asset files.
-          for asset in trial.assets.iter() {
-            match asset {
-              &DualAsset::Copy{ref path} => {
-                // FIXME(20160122): create missing dirs.
-                let mut dst_dir = path.dst_path.clone();
-                dst_dir.pop();
-                assert!(create_dir_all(&dst_dir).is_ok());
-                copy(&path.src_path, &path.dst_path).unwrap();
+            // Change our current directory.
+            //assert!(set_current_dir(&trial.current_path).is_ok());
+
+            // Create the trial directory.
+            match create_dir_all(&trial.trial_path) {
+              Ok(_) => {}
+              Err(_) => assert!(trial.trial_path.is_dir()),
+            }
+
+            // Dump resource map to file (looks like variable definitions).
+            {
+              let mut resmap_path = trial.trial_path.clone();
+              resmap_path.push(&format!("trial.{}.resmap", trial_idx));
+              let mut resmap_file = File::create(&resmap_path).unwrap();
+              let mut resmap_kv_pairs = vec![];
+              for (&(resource, res_idx), res_value) in trial.resource_map.iter() {
+                //writeln!(resmap_file, "{} = \"{}\"", resource.to_key_string(res_idx), res_value.to_value_string()).unwrap();
+                resmap_kv_pairs.push((resource.to_key_string(res_idx), res_value.to_value_string()));
               }
-              &DualAsset::Symlink{ref path} => {
-                // FIXME(20160122): create missing dirs.
-                let mut dst_dir = path.dst_path.clone();
-                dst_dir.pop();
-                assert!(create_dir_all(&dst_dir).is_ok());
-                symlink(&path.src_path, &path.dst_path).unwrap();
+              resmap_kv_pairs.sort();
+              for &(ref key, ref value) in resmap_kv_pairs.iter() {
+                writeln!(resmap_file, "\"{}\" = \"{}\"", key, value);
+              }
+            }
+
+            // Create asset files.
+            for asset in trial.assets.iter() {
+              match asset {
+                &DualAsset::Copy{ref path} => {
+                  // FIXME(20160122): create missing dirs.
+                  let mut dst_dir = path.dst_path.clone();
+                  dst_dir.pop();
+                  match create_dir_all(&dst_dir) {
+                    Ok(_) => {}
+                    Err(_) => assert!(dst_dir.is_dir()),
+                  }
+                  /*println!("DEBUG: worker: copy asset: {:?} -> {:?}",
+                      path.src_path, path.dst_path);*/
+                  if !path.dst_path.exists() {
+                    copy(&path.src_path, &path.dst_path).unwrap();
+                  }
+                }
+                &DualAsset::Symlink{ref path} => {
+                  // FIXME(20160122): create missing dirs.
+                  let mut dst_dir = path.dst_path.clone();
+                  dst_dir.pop();
+                  match create_dir_all(&dst_dir) {
+                    Ok(_) => {}
+                    Err(_) => assert!(dst_dir.is_dir()),
+                  }
+                  /*println!("DEBUG: worker: symlink asset: {:?} -> {:?}",
+                      path.src_path, path.dst_path);*/
+                  if !path.dst_path.exists() {
+                    symlink(&path.src_path, &path.dst_path).unwrap();
+                  }
+                }
+              }
+            }
+
+            // Copy process executables.
+            for &(ref exec, ref args, ref env_vars) in trial.programs.iter() {
+              if !exec.dst_path.exists() {
+                copy(&exec.src_path, &exec.dst_path).unwrap();
+              }
+            }
+
+            // Dump shell commands to scripts.
+            {
+              let mut script_path = trial.trial_path.clone();
+              script_path.push(&format!("trial.{}.sh", trial_idx));
+              let mut script_file = File::create(&script_path).unwrap();
+              writeln!(script_file, "#!/bin/sh").unwrap();
+              for &(ref exec, ref args, ref env_vars) in trial.programs.iter() {
+                for &(ref env_key, ref env_value) in env_vars.iter() {
+                  write!(script_file, "{}={} ", env_key, env_value).unwrap();
+                }
+                write!(script_file, "{} ", canonicalize(&exec.dst_path).unwrap().as_os_str().to_str().unwrap()).unwrap();
+                for arg in args.iter() {
+                  write!(script_file, "{} ", arg).unwrap();
+                }
+                writeln!(script_file, "").unwrap();
               }
             }
           }
 
           // Launch processes.
-          let mut procs = vec![];
           for &(ref exec, ref args, ref env_vars) in trial.programs.iter() {
-            let mut cmd = Command::new(&exec.dst_path);
+            /*println!("DEBUG: worker: trial path: {:?}", trial.trial_path);
+            println!("DEBUG: worker: exec src: {:?}", exec.src_path);
+            println!("DEBUG: worker: exec dst: {:?}", exec.dst_path);*/
+            if !exec.dst_path.exists() {
+              copy(&exec.src_path, &exec.dst_path).unwrap();
+            }
+            let mut cmd = Command::new(&canonicalize(&exec.dst_path).unwrap());
             for &(ref env_key, ref env_value) in env_vars.iter() {
               cmd.env(env_key, env_value);
             }
@@ -92,24 +151,6 @@ fn work_loop(work_rx: chan::Receiver<(usize, Experiment)>, work_res_cache: Arc<M
             procs.push(child);
             // FIXME(20160115): should be a configurable delay for stability.
             sleep_ms(2000);
-          }
-
-          // Dump shell commands to scripts.
-          {
-            let mut script_path = trial.trial_path.clone();
-            script_path.push(&format!("trial.{}.sh", trial_idx));
-            let mut script_file = File::create(&script_path).unwrap();
-            writeln!(script_file, "#!/bin/sh").unwrap();
-            for &(ref exec, ref args, ref env_vars) in trial.programs.iter() {
-              for &(ref env_key, ref env_value) in env_vars.iter() {
-                write!(script_file, "{}={} ", env_key, env_value).unwrap();
-              }
-              write!(script_file, "{} ", exec.dst_path.as_os_str().to_str().unwrap()).unwrap();
-              for arg in args.iter() {
-                write!(script_file, "{} ", arg).unwrap();
-              }
-              writeln!(script_file, "").unwrap();
-            }
           }
 
           // Join processes.
@@ -132,9 +173,14 @@ fn work_loop(work_rx: chan::Receiver<(usize, Experiment)>, work_res_cache: Arc<M
             }
           }
 
+          // Reclaim resources.
+          let mut work_res_cache = work_res_cache.lock().unwrap();
+          work_res_cache.reclaim(&trial.resource_map);
+
           // Reset our current directory.
-          assert!(set_current_dir(&orig_current_path).is_ok());
+          //assert!(set_current_dir(&orig_current_path).is_ok());
         }
+
         None => {
           work_queue.push((trial_idx, experiment));
           sleep_ms(1000);
@@ -145,6 +191,7 @@ fn work_loop(work_rx: chan::Receiver<(usize, Experiment)>, work_res_cache: Arc<M
 }
 
 pub struct WorkerServer {
+  hostfile:     Hostfile,
   res_cache:    Arc<Mutex<ResourceCache>>,
   //work_tx:      Sender<(usize, Experiment)>,
   //work_tx:      spmc::unbounded::Producer<'a, (usize, Experiment)>,
@@ -153,21 +200,24 @@ pub struct WorkerServer {
 }
 
 impl WorkerServer {
-  pub fn new(cache_cfg: ResourceCacheConfig) -> WorkerServer {
+  pub fn new(num_workers: usize, hostfile: Hostfile, cache_cfg: ResourceCacheConfig) -> WorkerServer {
     let res_cache = Arc::new(Mutex::new(ResourceCache::new(cache_cfg)));
-    let num_workers = 1; // FIXME(20160113)
+    //let num_workers = 1; // FIXME(20160113)
     //let (tx, rx) = channel();
     //let (tx, rx) = spmc::unbounded::new();
     let (tx, rx) = chan::async();
     let work_pool = ThreadPool::new(num_workers);
+    let work_lock = Arc::new(Mutex::new(()));
     for worker_idx in 0 .. num_workers {
       let work_rx = rx.clone();
       let work_res_cache = res_cache.clone();
+      let work_lock = work_lock.clone();
       work_pool.execute(move || {
-        work_loop(work_rx, work_res_cache);
+        work_loop(work_rx, work_res_cache, work_lock);
       });
     }
     WorkerServer{
+      hostfile:     hostfile,
       res_cache:    res_cache,
       work_tx:      tx,
       work_pool:    work_pool,
@@ -182,22 +232,30 @@ impl WorkerServer {
     assert!(receiver.connect(CONTROL_SOURCE_ADDR).is_ok());
     let mut sender = self.zmq_ctx.socket(zmq::PUSH).unwrap();
     assert!(sender.connect(CONTROL_SINK_ADDR).is_ok());*/
-    let mut receiver = nanomsg::Socket::new(nanomsg::Protocol::Pull).unwrap();
-    let receiver_end = receiver.connect(CONTROL_SOURCE_ADDR).unwrap();
 
+    println!("DEBUG: worker: connecting to source: {}",
+        self.hostfile.get_source_addr());
+    let mut source_recv = nanomsg::Socket::new(nanomsg::Protocol::Pull).unwrap();
+    source_recv.connect(&self.hostfile.get_source_addr()).unwrap();
+
+    let mut encoded_str = String::new();
     loop {
-      //let encoded_bytes = receiver.recv_bytes(0).unwrap();
-      let mut encoded_bytes = vec![];
-      receiver.read_to_end(&mut encoded_bytes).unwrap();
+      //let mut encoded_bytes = vec![];
+      //source_recv.read_to_end(&mut encoded_bytes).unwrap();
+      encoded_str.clear();
+      source_recv.read_to_string(&mut encoded_str).unwrap();
+      println!("DEBUG: worker: received message: {}", encoded_str);
       let msg: ProtocolMsg = {
-        let encoded_str = from_utf8(&encoded_bytes).unwrap();
-        json::decode(encoded_str).unwrap()
+        //let encoded_str = from_utf8(&encoded_bytes).unwrap();
+        json::decode(&encoded_str).unwrap()
       };
       match msg {
         ProtocolMsg::PushWork{trial_idx, experiment} => {
+          println!("DEBUG: worker: received work: trial: {} experiment: {:?}",
+              trial_idx, experiment);
           self.work_tx.send((trial_idx, experiment));
         }
-        _ => {}
+        _ => unimplemented!(),
       }
     }
   }

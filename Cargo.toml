@@ -8,12 +8,16 @@ name = "hydra"
 path = "src/lib.rs"
 
 [[bin]]
-name = "hydrad"
-path = "tools/hydrad.rs"
+name = "hydra-ctrld"
+path = "tools/hydra-ctrld.rs"
 
 [[bin]]
-name = "hydra-client"
-path = "tools/hydra-client.rs"
+name = "hydra-worker"
+path = "tools/hydra-worker.rs"
+
+[[bin]]
+name = "test-client"
+path = "tools/test-client.rs"
 
 [dependencies]
 rand = "*"
