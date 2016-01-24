@@ -13,6 +13,7 @@ use std::env::{current_dir, set_current_dir};
 use std::fs::{File, canonicalize, copy, create_dir_all};
 use std::io::{Read, Write};
 use std::os::unix::fs::{symlink};
+use std::os::unix::io::{FromRawFd, IntoRawFd};
 use std::process::{Command, Stdio};
 use std::str::{from_utf8};
 use std::sync::{Arc, Mutex};
@@ -39,6 +40,8 @@ fn work_loop(work_rx: chan::Receiver<(usize, Experiment)>, work_res_cache: Arc<M
       match maybe_trial {
         Some(trial) => {
           let mut procs = vec![];
+          //let mut stdouts = vec![];
+          //let mut stderrs = vec![];
 
           {
             let guard = work_lock.lock().unwrap();
@@ -46,15 +49,21 @@ fn work_loop(work_rx: chan::Receiver<(usize, Experiment)>, work_res_cache: Arc<M
             // Change our current directory.
             //assert!(set_current_dir(&trial.current_path).is_ok());
 
-            // Create the trial directory.
-            match create_dir_all(&trial.trial_path) {
+            // Create the trial output directory.
+            match create_dir_all(&trial.output_path) {
               Ok(_) => {}
-              Err(_) => assert!(trial.trial_path.is_dir()),
+              Err(_) => assert!(trial.output_path.is_dir()),
+            }
+
+            // Create the trial scratch directory.
+            match create_dir_all(&trial.scratch_path) {
+              Ok(_) => {}
+              Err(_) => assert!(trial.scratch_path.is_dir()),
             }
 
             // Dump resource map to file (looks like variable definitions).
             {
-              let mut resmap_path = trial.trial_path.clone();
+              let mut resmap_path = trial.scratch_path.clone();
               resmap_path.push(&format!("trial.{}.resmap", trial_idx));
               let mut resmap_file = File::create(&resmap_path).unwrap();
               let mut resmap_kv_pairs = vec![];
@@ -111,7 +120,7 @@ fn work_loop(work_rx: chan::Receiver<(usize, Experiment)>, work_res_cache: Arc<M
 
             // Dump shell commands to scripts.
             {
-              let mut script_path = trial.trial_path.clone();
+              let mut script_path = trial.scratch_path.clone();
               script_path.push(&format!("trial.{}.sh", trial_idx));
               let mut script_file = File::create(&script_path).unwrap();
               writeln!(script_file, "#!/bin/sh").unwrap();
@@ -129,10 +138,7 @@ fn work_loop(work_rx: chan::Receiver<(usize, Experiment)>, work_res_cache: Arc<M
           }
 
           // Launch processes.
-          for &(ref exec, ref args, ref env_vars) in trial.programs.iter() {
-            /*println!("DEBUG: worker: trial path: {:?}", trial.trial_path);
-            println!("DEBUG: worker: exec src: {:?}", exec.src_path);
-            println!("DEBUG: worker: exec dst: {:?}", exec.dst_path);*/
+          for (proc_idx, &(ref exec, ref args, ref env_vars)) in trial.programs.iter().enumerate() {
             if !exec.dst_path.exists() {
               copy(&exec.src_path, &exec.dst_path).unwrap();
             }
@@ -141,34 +147,53 @@ fn work_loop(work_rx: chan::Receiver<(usize, Experiment)>, work_res_cache: Arc<M
               cmd.env(env_key, env_value);
             }
             cmd.args(args);
-            cmd.current_dir(&trial.trial_path);
-            cmd.stdout(Stdio::piped());
-            cmd.stderr(Stdio::piped());
+            cmd.current_dir(&trial.scratch_path);
+
+            // FIXME(20160123): try to pipe stdout/stderr directly to files,
+            // otherwise the buffer can fill up (looking at you, pachi-11)
+            // and will hang the process.
+            /*cmd.stdout(Stdio::piped());
+            cmd.stderr(Stdio::piped());*/
+
+            let mut out_path = trial.output_path.clone();
+            out_path.push(&format!("trial.{}.out.{}", trial_idx, proc_idx));
+            let out_file = File::create(&out_path).unwrap();
+            unsafe { cmd.stdout(Stdio::from_raw_fd(out_file.into_raw_fd())) };
+
+            let mut err_path = trial.output_path.clone();
+            err_path.push(&format!("trial.{}.err.{}", trial_idx, proc_idx));
+            let err_file = File::create(&err_path).unwrap();
+            unsafe { cmd.stderr(Stdio::from_raw_fd(err_file.into_raw_fd())) };
+
             let child = match cmd.spawn() {
               Ok(child) => child,
               Err(e) => panic!("failed to start trial: {:?}", e),
             };
             procs.push(child);
             // FIXME(20160115): should be a configurable delay for stability.
-            sleep_ms(2000);
+            sleep_ms(3000);
           }
 
           // Join processes.
-          for child in procs.into_iter() {
+          for (proc_idx, mut child) in procs.into_iter().enumerate() {
             // FIXME(20160113): instead of getting stdout/err at end, read and
             // dump them periodically; can do this by .take()'ing stdout and
             // stderr and reading them from another thread.
-            match child.wait_with_output() {
+            /*match child.wait_with_output() {
               Ok(output) => {
-                let mut out_path = trial.trial_path.clone();
-                out_path.push(&format!("trial.{}.out", trial_idx));
-                let mut err_path = trial.trial_path.clone();
-                err_path.push(&format!("trial.{}.err", trial_idx));
+                let mut out_path = trial.output_path.clone();
+                out_path.push(&format!("trial.{}.out.{}", trial_idx, proc_idx));
+                let mut err_path = trial.output_path.clone();
+                err_path.push(&format!("trial.{}.err.{}", trial_idx, proc_idx));
                 let mut out_file = File::create(&out_path).unwrap();
                 out_file.write_all(&output.stdout).unwrap();
                 let mut err_file = File::create(&err_path).unwrap();
                 err_file.write_all(&output.stderr).unwrap();
               }
+              Err(e) => panic!("failed to finish trial: {:?}", e),
+            }*/
+            match child.wait() {
+              Ok(_) => {}
               Err(e) => panic!("failed to finish trial: {:?}", e),
             }
           }

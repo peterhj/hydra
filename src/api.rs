@@ -2,10 +2,10 @@ use std::path::{PathBuf};
 
 #[derive(Clone, RustcDecodable, RustcEncodable, Debug)]
 pub struct Experiment {
-  pub trial_cfg:    TrialConfig,
-  pub current_path: PathBuf,
-  pub trials_path:  PathBuf,
-  pub num_trials:   usize,
+  pub trial_cfg:        TrialConfig,
+  pub trials_path:      PathBuf,
+  pub scratch_prefix:   PathBuf,
+  pub num_trials:       usize,
 }
 
 #[derive(Clone, RustcDecodable, RustcEncodable, Debug)]

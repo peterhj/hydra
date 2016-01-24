@@ -28,8 +28,8 @@ fn main() {
   };
   let experiment = Experiment{
     trial_cfg:      trial_cfg,
-    current_path:   PathBuf::from("/nscratch/phj/space/holmes-project/test"),
     trials_path:    PathBuf::from("trials"),
+    scratch_prefix: PathBuf::from("/scratch/phj/space/holmes-project/test"),
     num_trials:     10,
   };
   let mut client = ControlClient::new();

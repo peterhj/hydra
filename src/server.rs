@@ -13,8 +13,8 @@ pub struct DualPath {
 }
 
 impl DualPath {
-  pub fn new(path: &PathBuf, trials_path: &PathBuf) -> DualPath {
-    let mut dst_path = trials_path.clone();
+  pub fn new(path: &PathBuf, dst_dir: &PathBuf) -> DualPath {
+    let mut dst_path = dst_dir.clone();
     dst_path.push(&path.file_name().unwrap());
     DualPath{
       src_path: canonicalize(path).unwrap(),
@@ -22,8 +22,8 @@ impl DualPath {
     }
   }
 
-  pub fn new_with_suffix(path: &PathBuf, trials_path: &PathBuf, suffix: &PathBuf) -> DualPath {
-    let mut dst_path = trials_path.clone();
+  pub fn new_with_suffix(path: &PathBuf, dst_dir: &PathBuf, suffix: &PathBuf) -> DualPath {
+    let mut dst_path = dst_dir.clone();
     dst_path.push(suffix);
     DualPath{
       src_path: canonicalize(path).unwrap(),
@@ -135,8 +135,8 @@ fn expand_args(args: &[String], resource_map: &HashMap<(Resource, usize), Resour
 pub struct Trial {
   pub trial_idx:    usize,
   pub resource_map: HashMap<(Resource, usize), ResourceValue>,
-  pub current_path: PathBuf,
-  pub trial_path:   PathBuf,
+  pub output_path:  PathBuf,
+  pub scratch_path: PathBuf,
   //pub hyperparam:   Option<DualPath>,
   //pub env_vars:     Vec<(String, String)>,
   pub assets:       Vec<DualAsset>,
@@ -145,6 +145,8 @@ pub struct Trial {
 
 impl Trial {
   pub fn create(trial_idx: usize, experiment: &Experiment, cache: &mut ResourceCache) -> Option<Trial> {
+    let mut scratch_path = experiment.scratch_prefix.clone();
+    scratch_path.push(&experiment.trials_path);
     let mut resource_map = HashMap::new();
     for &(resource, res_count) in experiment.trial_cfg.resources.iter() {
       for res_idx in 0 .. res_count {
@@ -162,17 +164,13 @@ impl Trial {
     let assets: Vec<_> = experiment.trial_cfg.assets
       .iter().map(|asset| match asset {
         &Asset::Copy{ref src} => {
-          let asset_path = DualPath::new(src, &experiment.trials_path);
-          //println!("DEBUG: trial: asset path {:?}", asset_path);
-          DualAsset::Copy{path: asset_path}
+          DualAsset::Copy{path: DualPath::new(src, &scratch_path)}
         }
         &Asset::Symlink{ref src} => {
-          let asset_path = DualPath::new(src, &experiment.trials_path);
-          //println!("DEBUG: trial: asset path {:?}", asset_path);
-          DualAsset::Symlink{path: asset_path}
+          DualAsset::Symlink{path: DualPath::new(src, &scratch_path)}
         }
         &Asset::SymlinkAs{ref src, ref dst} => {
-          DualAsset::Symlink{path: DualPath::new_with_suffix(src, &experiment.trials_path, dst)}
+          DualAsset::Symlink{path: DualPath::new_with_suffix(src, &scratch_path, dst)}
         }
       })
       .collect();
@@ -186,14 +184,14 @@ impl Trial {
           Some(env_vars) => env_vars,
           None => panic!("failed to make env vars!"),
         };
-        (DualPath::new(p, &experiment.trials_path), args, env_vars)
+        (DualPath::new(p, &scratch_path), args, env_vars)
       })
       .collect();
     Some(Trial{
       trial_idx:    trial_idx,
       resource_map: resource_map,
-      current_path: experiment.current_path.clone(),
-      trial_path:   experiment.trials_path.clone(),
+      output_path:  experiment.trials_path.clone(),
+      scratch_path: scratch_path,
       assets:       assets,
       programs:     programs,
     })
