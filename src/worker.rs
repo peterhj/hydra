@@ -17,6 +17,7 @@ use std::os::unix::io::{FromRawFd, IntoRawFd};
 use std::process::{Command, Stdio};
 use std::str::{from_utf8};
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
 //use std::sync::mpsc::{Sender, channel};
 use std::thread::{sleep_ms};
 
@@ -24,7 +25,15 @@ use std::thread::{sleep_ms};
   Idle,
 }*/
 
-fn work_loop(work_rx: chan::Receiver<(usize, Experiment)>, work_res_cache: Arc<Mutex<ResourceCache>>, work_lock: Arc<Mutex<()>>) {
+#[derive(Clone)]
+struct WorkerState {
+  work_rx:          chan::Receiver<(usize, Experiment)>,
+  work_res_cache:   Arc<Mutex<ResourceCache>>,
+  work_lock:        Arc<Mutex<()>>,
+  work_counter:     Arc<AtomicUsize>,
+}
+
+fn work_loop(work_rx: chan::Receiver<(usize, Experiment)>, work_res_cache: Arc<Mutex<ResourceCache>>, work_lock: Arc<Mutex<()>>, work_counter: Arc<AtomicUsize>) {
   let orig_current_path = current_dir().unwrap();
   let mut work_queue = vec![];
   //let mut trial_queue = vec![];
@@ -204,6 +213,8 @@ fn work_loop(work_rx: chan::Receiver<(usize, Experiment)>, work_res_cache: Arc<M
 
           // Reset our current directory.
           //assert!(set_current_dir(&orig_current_path).is_ok());
+
+          work_counter.fetch_sub(1, Ordering::SeqCst);
         }
 
         None => {
@@ -216,12 +227,14 @@ fn work_loop(work_rx: chan::Receiver<(usize, Experiment)>, work_res_cache: Arc<M
 }
 
 pub struct WorkerServer {
+  num_workers:  usize,
   hostfile:     Hostfile,
   res_cache:    Arc<Mutex<ResourceCache>>,
   //work_tx:      Sender<(usize, Experiment)>,
   //work_tx:      spmc::unbounded::Producer<'a, (usize, Experiment)>,
   work_tx:      chan::Sender<(usize, Experiment)>,
   work_pool:    ThreadPool,
+  work_counter: Arc<AtomicUsize>,
 }
 
 impl WorkerServer {
@@ -233,19 +246,23 @@ impl WorkerServer {
     let (tx, rx) = chan::async();
     let work_pool = ThreadPool::new(num_workers);
     let work_lock = Arc::new(Mutex::new(()));
+    let work_counter = Arc::new(AtomicUsize::new(0));
     for worker_idx in 0 .. num_workers {
       let work_rx = rx.clone();
       let work_res_cache = res_cache.clone();
       let work_lock = work_lock.clone();
+      let work_counter = work_counter.clone();
       work_pool.execute(move || {
-        work_loop(work_rx, work_res_cache, work_lock);
+        work_loop(work_rx, work_res_cache, work_lock, work_counter);
       });
     }
     WorkerServer{
+      num_workers:  num_workers,
       hostfile:     hostfile,
       res_cache:    res_cache,
       work_tx:      tx,
       work_pool:    work_pool,
+      work_counter: work_counter,
     }
   }
 
@@ -258,7 +275,7 @@ impl WorkerServer {
     let mut sender = self.zmq_ctx.socket(zmq::PUSH).unwrap();
     assert!(sender.connect(CONTROL_SINK_ADDR).is_ok());*/
 
-    println!("DEBUG: worker: connecting to source: {}",
+    /*println!("DEBUG: worker: connecting to source: {}",
         self.hostfile.get_source_addr());
     let mut source_recv = nanomsg::Socket::new(nanomsg::Protocol::Pull).unwrap();
     source_recv.connect(&self.hostfile.get_source_addr()).unwrap();
@@ -278,6 +295,42 @@ impl WorkerServer {
         ProtocolMsg::PushWork{trial_idx, experiment} => {
           println!("DEBUG: worker: received work: trial: {} experiment: {:?}",
               trial_idx, experiment);
+          // FIXME(20160123): block if all threads are full.
+          self.work_tx.send((trial_idx, experiment));
+        }
+        _ => unimplemented!(),
+      }
+    }*/
+
+    println!("DEBUG: worker: connecting to source: {}",
+        self.hostfile.get_source_addr());
+    let mut source_req = nanomsg::Socket::new(nanomsg::Protocol::Req).unwrap();
+    source_req.connect(&self.hostfile.get_source_addr()).unwrap();
+
+    let mut encoded_str = String::new();
+    loop {
+      if self.work_counter.load(Ordering::SeqCst) >= self.num_workers {
+        sleep_ms(5000);
+        continue;
+      }
+
+      let req_msg = ProtocolMsg::RequestWork;
+      let encoded_msg = json::encode(&req_msg).unwrap();
+      let encoded_bytes = encoded_msg.as_bytes();
+      source_req.write_all(encoded_bytes).unwrap();
+
+      encoded_str.clear();
+      source_req.read_to_string(&mut encoded_str).unwrap();
+      let recv_msg: ProtocolMsg = {
+        json::decode(&encoded_str).unwrap()
+      };
+
+      match recv_msg {
+        ProtocolMsg::PushWork{trial_idx, experiment} => {
+          println!("DEBUG: worker: received work: trial: {} experiment: {:?}",
+              trial_idx, experiment);
+          // FIXME(20160123): block if all threads are full.
+          self.work_counter.fetch_add(1, Ordering::SeqCst);
           self.work_tx.send((trial_idx, experiment));
         }
         _ => unimplemented!(),

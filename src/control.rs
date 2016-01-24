@@ -63,10 +63,10 @@ impl ControlServer {
 
     println!("DEBUG: ctrld: binding cmd: {}",
         self.hostfile.get_cmd_addr());
-    let mut cmd_reply = nanomsg::Socket::new(nanomsg::Protocol::Rep).unwrap();
-    let mut cmd_reply_endpoint = cmd_reply.bind(&self.hostfile.get_cmd_addr()).unwrap();
+    let mut cmd_rep = nanomsg::Socket::new(nanomsg::Protocol::Rep).unwrap();
+    let mut cmd_rep_endpoint = cmd_rep.bind(&self.hostfile.get_cmd_addr()).unwrap();
 
-    println!("DEBUG: ctrld: binding source: {}",
+    /*println!("DEBUG: ctrld: binding source: {}",
         self.hostfile.get_source_addr());
     let mut source = nanomsg::Socket::new(nanomsg::Protocol::Push).unwrap();
     let mut source_endpoint = source.bind(&self.hostfile.get_source_addr()).unwrap();
@@ -104,9 +104,57 @@ impl ControlServer {
           }
         }
       }
+    }*/
+
+    println!("DEBUG: ctrld: binding source: {}",
+        self.hostfile.get_source_addr());
+    let mut source_rep = nanomsg::Socket::new(nanomsg::Protocol::Rep).unwrap();
+    let mut source_rep_endpoint = source_rep.bind(&self.hostfile.get_source_addr()).unwrap();
+
+    let mut encoded_str = String::new();
+    loop {
+      encoded_str.clear();
+      cmd_rep.read_to_string(&mut encoded_str).unwrap();
+      let cmd: ControlCmd = {
+        json::decode(&encoded_str).unwrap()
+      };
+      cmd_rep.write_all("ok".as_bytes()).unwrap();
+
+      match cmd {
+        ControlCmd::Dummy => {
+          println!("DEBUG: received dummy message");
+        }
+        ControlCmd::SubmitExperiment{experiment} => {
+          println!("DEBUG: received experiment");
+          println!("DEBUG: {:?}", experiment);
+          for trial_idx in 0 .. experiment.num_trials {
+            encoded_str.clear();
+            source_rep.read_to_string(&mut encoded_str).unwrap();
+            let recv_msg: ProtocolMsg = {
+              json::decode(&encoded_str).unwrap()
+            };
+
+            match recv_msg {
+              ProtocolMsg::RequestWork => {
+                let msg = ProtocolMsg::PushWork{
+                  trial_idx: trial_idx,
+                  experiment: experiment.clone(),
+                };
+                let encoded_msg = json::encode(&msg).unwrap();
+                let encoded_bytes = encoded_msg.as_bytes();
+                println!("DEBUG: sending trial {}/{}...",
+                    trial_idx, experiment.num_trials);
+                source_rep.write_all(encoded_bytes).unwrap();
+              }
+              _ => unimplemented!(),
+            }
+          }
+        }
+      }
     }
 
-    cmd_reply_endpoint.shutdown().unwrap();
-    source_endpoint.shutdown().unwrap();
+    cmd_rep_endpoint.shutdown().unwrap();
+    //source_endpoint.shutdown().unwrap();
+    source_rep_endpoint.shutdown().unwrap();
   }
 }
