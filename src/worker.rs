@@ -275,13 +275,18 @@ impl WorkerServer {
     let mut sender = self.zmq_ctx.socket(zmq::PUSH).unwrap();
     assert!(sender.connect(CONTROL_SINK_ADDR).is_ok());*/
 
-    /*println!("DEBUG: worker: connecting to source: {}",
+    println!("DEBUG: worker: connecting to source: {}",
         self.hostfile.get_source_addr());
     let mut source_recv = nanomsg::Socket::new(nanomsg::Protocol::Pull).unwrap();
     source_recv.connect(&self.hostfile.get_source_addr()).unwrap();
 
     let mut encoded_str = String::new();
     loop {
+      /*if self.work_counter.load(Ordering::SeqCst) >= self.num_workers {
+        sleep_ms(5000);
+        continue;
+      }*/
+
       //let mut encoded_bytes = vec![];
       //source_recv.read_to_end(&mut encoded_bytes).unwrap();
       encoded_str.clear();
@@ -296,13 +301,14 @@ impl WorkerServer {
           println!("DEBUG: worker: received work: trial: {} experiment: {:?}",
               trial_idx, experiment);
           // FIXME(20160123): block if all threads are full.
+          //self.work_counter.fetch_add(1, Ordering::SeqCst);
           self.work_tx.send((trial_idx, experiment));
         }
         _ => unimplemented!(),
       }
-    }*/
+    }
 
-    println!("DEBUG: worker: connecting to source: {}",
+    /*println!("DEBUG: worker: connecting to source: {}",
         self.hostfile.get_source_addr());
     let mut source_req = nanomsg::Socket::new(nanomsg::Protocol::Req).unwrap();
     source_req.connect(&self.hostfile.get_source_addr()).unwrap();
@@ -335,6 +341,6 @@ impl WorkerServer {
         }
         _ => unimplemented!(),
       }
-    }
+    }*/
   }
 }

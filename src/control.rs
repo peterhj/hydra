@@ -66,7 +66,7 @@ impl ControlServer {
     let mut cmd_rep = nanomsg::Socket::new(nanomsg::Protocol::Rep).unwrap();
     let mut cmd_rep_endpoint = cmd_rep.bind(&self.hostfile.get_cmd_addr()).unwrap();
 
-    /*println!("DEBUG: ctrld: binding source: {}",
+    println!("DEBUG: ctrld: binding source: {}",
         self.hostfile.get_source_addr());
     let mut source = nanomsg::Socket::new(nanomsg::Protocol::Push).unwrap();
     let mut source_endpoint = source.bind(&self.hostfile.get_source_addr()).unwrap();
@@ -76,12 +76,12 @@ impl ControlServer {
       //let mut encoded_bytes = vec![];
       //cmd_reply.read_to_end(&mut encoded_bytes).unwrap();
       encoded_str.clear();
-      cmd_reply.read_to_string(&mut encoded_str).unwrap();
+      cmd_rep.read_to_string(&mut encoded_str).unwrap();
       let cmd: ControlCmd = {
         //let encoded_str = from_utf8(&encoded_bytes).unwrap();
         json::decode(&encoded_str).unwrap()
       };
-      cmd_reply.write_all("ok".as_bytes()).unwrap();
+      cmd_rep.write_all("ok".as_bytes()).unwrap();
       match cmd {
         ControlCmd::Dummy => {
           println!("DEBUG: received dummy message");
@@ -104,9 +104,10 @@ impl ControlServer {
           }
         }
       }
-    }*/
+    }
+    source_endpoint.shutdown().unwrap();
 
-    println!("DEBUG: ctrld: binding source: {}",
+    /*println!("DEBUG: ctrld: binding source: {}",
         self.hostfile.get_source_addr());
     let mut source_rep = nanomsg::Socket::new(nanomsg::Protocol::Rep).unwrap();
     let mut source_rep_endpoint = source_rep.bind(&self.hostfile.get_source_addr()).unwrap();
@@ -152,9 +153,8 @@ impl ControlServer {
         }
       }
     }
+    source_rep_endpoint.shutdown().unwrap();*/
 
     cmd_rep_endpoint.shutdown().unwrap();
-    //source_endpoint.shutdown().unwrap();
-    source_rep_endpoint.shutdown().unwrap();
   }
 }
